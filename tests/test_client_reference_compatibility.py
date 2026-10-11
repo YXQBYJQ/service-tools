@@ -113,9 +113,16 @@ async def test_multipart_reference_variants_use_the_same_admission(state, field,
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("restriction", ["anlas", "daily", "monthly", "model"])
-async def test_compatibility_does_not_relax_permissions_and_budgets(state, restriction):
+async def test_compatibility_does_not_relax_permissions_and_budgets(state, restriction, monkeypatch):
+    from app import main
+
+    def unexpected_conversion(*args):
+        pytest.fail("Rejected requests must not start image normalization")
+
+    monkeypatch.setattr(main, "normalize_image_references", unexpected_conversion)
     body = image_body(precise=1)
     body["parameters"]["director_reference_images_cached"][0]["cache_secret_key"] = UUID
+    body["parameters"]["director_reference_images_cached"][0]["data"] = reference_image("JPEG")
     key = state.db.keys["fixture-1"]
     if restriction == "anlas":
         key["allow_anlas"] = False
