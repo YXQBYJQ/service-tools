@@ -21,7 +21,7 @@ PNG = base64.b64encode(PNG_BYTES).decode()
 
 
 def image_body(*, precise=0, **parameters):
-    params = dict(width=1024, height=1024, steps=28, n_samples=1,
+    params = dict(width=1024, height=1024, steps=23, n_samples=1,
                   sm=False, sm_dyn=False)
     if precise:
         params.update(
@@ -189,6 +189,37 @@ async def post(path, body, token="fixture-1"):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("count,anlas", [(1, 0), (5, 2)])
+async def test_baibai_vibe_uuid_is_forwarded_with_data_and_billed(state, count, anlas):
+    cached = [{"cache_secret_key": "1e6714a5-571c-4ec2-b34a-27f263bef0e2",
+               "data": base64.b64encode(b"mock-vibe-vector").decode()} for _ in range(count)]
+    body = image_body(reference_image_multiple_cached=cached, reference_strength_multiple=[0.6] * count)
+    response = await post("/ai/generate-image", body)
+    assert response.status_code == 200
+    assert len(state.nai.calls) == 1
+    sent = state.nai.calls[0][2]["parameters"]
+    assert sent["reference_image_multiple_cached"] == cached
+    assert "reference_information_extracted_multiple" not in sent
+    assert state.db.charges[-1][1]["anlas"] == anlas
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["missing_data", "empty_strength", "empty_extraction"])
+async def test_invalid_baibai_vibe_is_rejected_before_dispatch(state, invalid):
+    cached = [{"cache_secret_key": "1e6714a5-571c-4ec2-b34a-27f263bef0e2",
+               "data": base64.b64encode(b"mock-vibe-vector").decode()}]
+    body = image_body(reference_image_multiple_cached=cached, reference_strength_multiple=[0.6])
+    if invalid == "missing_data":
+        del cached[0]["data"]
+    elif invalid == "empty_strength":
+        body["parameters"]["reference_strength_multiple"] = []
+    else:
+        body["parameters"]["reference_information_extracted_multiple"] = []
+    assert (await post("/ai/generate-image", body)).status_code == 400
+    assert not state.nai.calls and not state.db.charges
+
+
+@pytest.mark.asyncio
 async def test_free_legacy_daily_quota_is_per_key_and_counts_success_only(state):
     key = state.db.keys["fixture-1"]
     key["daily_images"] = 1
@@ -233,7 +264,7 @@ async def test_failed_legacy_generation_does_not_use_free_daily_quota(state):
 async def test_disconnect_during_unknown_result_records_pending_once(state):
     state.nai.release = asyncio.Event()
     state.nai.error = UpstreamError(502, '上游响应中断', billing_uncertain=True)
-    task = asyncio.create_task(post('/ai/generate-image', image_body(width=256, height=256, steps=29)))
+    task = asyncio.create_task(post('/ai/generate-image', image_body(width=256, height=256, steps=23, controlnet_model='fixture')))
     await state.nai.entered.wait()
     task.cancel()
     await asyncio.sleep(0)
@@ -355,7 +386,7 @@ async def test_invalid_free_clamp_parameters_rejected_before_dispatch(state, str
     state.db.keys["fixture-1"]["allow_anlas"] = False
     response = await post("/ai/generate-image" + ("-stream" if streaming else ""), image_body(**{field: value}))
     assert response.status_code == 400
-    assert response.json()["error"]["message"] == "图片参数无效"
+    assert response.json()["error"]["message"] == ("steps 必须是正整数" if field == "steps" else "图片参数无效")
     assert not state.nai.calls and not state.db.charges
     assert state.global_active == 0 and not state.image_budget_lock.locked()
 

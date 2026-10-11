@@ -11,6 +11,7 @@ import binascii
 import math
 import re
 from typing import Any, Optional, Tuple
+from .v5_effort import MEDIUM_MODELS
 
 V5_COST_MULTIPLIER = 1.5
 
@@ -156,14 +157,21 @@ def validate_image_references(payload: dict) -> Optional[str]:
             return "精确参考原始数组必须包含完整 PNG base64"
     for item in cached_vibes + precise:
         is_precise = any(item is entry for entry in precise)
+        cache_key = item.get("cache_secret_key") if isinstance(item, dict) else None
+        # BaiBai uses UUIDv4 for Vibe cache identifiers. Gate does not look up
+        # these keys locally; complete reference data is still required below.
+        valid_key = isinstance(cache_key, str) and (
+            re.fullmatch(r"[0-9a-f]{64}", cache_key)
+            or (not is_precise and re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", cache_key))
+        )
         if (not isinstance(item, dict)
-                or not isinstance(item.get("cache_secret_key"), str)
-                or not re.fullmatch(r"[0-9a-f]{64}", item["cache_secret_key"])
+                or not valid_key
                 or not _base64_data(item.get("data"), png=is_precise,
                                     source_image=not is_precise and model in VIBE_RAW_MODELS)
                 or (not is_precise and model in VIBE_ENCODED_MODELS
                     and _base64_data(item.get("data"), source_image=True))):
-            return "缓存参考必须包含 64 位小写十六进制 cache_secret_key 和完整 base64 data；精确参考须为 PNG"
+            return "缓存参考必须包含 64 位小写十六进制 cache_secret_key（Vibe 也支持小写 UUIDv4）和完整 base64 data；精确参考须为 PNG"
     return None
 
 
@@ -268,7 +276,8 @@ def snap_v5_preset(width: int, height: int) -> Tuple[int, int]:
 
 
 def estimate_image_cost(params: dict, is_opus: bool = True, *,
-                        v5_allowance_available: bool = True) -> dict[str, int]:
+                        v5_allowance_available: bool = True,
+                        medium_multiplier: float = 0.60) -> dict[str, float]:
     """估算一次 /ai/generate-image 的消耗。
 
     返回 {"anlas": 扣多少 Anlas, "v5": 占多少个 V5 额度单位}。
@@ -316,7 +325,8 @@ def estimate_image_cost(params: dict, is_opus: bool = True, *,
 
     if is_v5:
         free_first = bool(is_opus and v5_allowance_available and v5_allowance_eligible(params))
-        return {"anlas": per * (n - int(free_first)), "v5": int(free_first)}
+        return {"anlas": per * (n - int(free_first)), "v5":
+                (medium_multiplier if params.get("model") in MEDIUM_MODELS else 1) if free_first else 0}
 
     paid_outputs = n - int(is_opus and shaped)
     # 官方余额实测：符合条件的多图首张参考费减免，单张照收。
